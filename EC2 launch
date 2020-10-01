@@ -1,0 +1,133 @@
+provider "aws" {
+  region     = "ap-south-1"
+  profile    = "lw2" 
+} 
+
+resource "tls_private_key" "key" {
+  algorithm = "RSA"
+  rsa_bits = 4096
+}
+resource "aws_key_pair" "generated_key" {
+ key_name = "lw_key"
+ public_key = tls_private_key.key.public_key_openssh
+
+depends_on = [
+    tls_private_key.key
+]
+}
+
+
+resource "local_file" "foo" {
+    content  = tls_private_key.key.private_key_pem
+    filename = "C:/Users/user/Desktop/terra/code/lw_key.pem"
+    file_permission = "0400"
+}
+
+
+resource "aws_security_group" "allow_tls2" {
+  name        = "allow_tls2"
+  description = "Allow TLS inbound traffic" 
+
+ ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+
+  }
+
+  ingress {
+    description = "HHTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }  
+
+  tags = {
+    Name = "allow_tls2"
+  }
+}
+
+resource "aws_instance" "web1" {
+   depends_on = [
+        aws_security_group.allow_tls2,
+        tls_private_key.key,
+   ]
+  ami           = "ami-0447a12f28fddb066"
+  instance_type = "t2.micro"
+  key_name = aws_key_pair.generated_key.key_name
+  security_groups = ["allow_tls2"]
+
+ tags = {
+    Name = "kunal"
+  }
+
+  connection {
+    type     = "ssh"
+    user     = "ec2-user"
+    private_key = "${tls_private_key.key.private_key_pem}"
+    host     = aws_instance.web1.public_ip
+  }
+ 
+  provisioner "remote-exec" {
+     inline = [
+      "sudo yum install httpd php git -y",
+      "sudo systemctl restart httpd",
+      "sudo systemctl enable httpd",
+      
+    ]
+  }
+
+}
+
+
+resource "aws_ebs_volume" "ebs1" {
+  availability_zone = aws_instance.web1.availability_zone
+  size              = 1
+
+  tags = {
+    Name = "new_volume"
+  }
+}
+
+resource "aws_volume_attachment" "ebs_att" {
+  device_name = "/dev/sdh"
+  volume_id   =  aws_ebs_volume.ebs1.id
+  instance_id =  aws_instance.web1.id
+  force_detach = true
+}
+
+resource "null_resource" "nulllocal3" {
+   depends_on = [
+        aws_volume_attachment.ebs_att,
+  ]
+    connection {
+    type     = "ssh"
+    user     = "ec2-user"
+    private_key = "${tls_private_key.key.private_key_pem}"
+    host     = aws_instance.web1.public_ip
+  }
+  
+   provisioner "remote-exec" {
+          inline = [
+             "sudo mkfs.ext4 /dev/xvdh",
+             "sudo mount /dev/xvdh /var/www/html",
+             "sudo rm -rf /var/www/html/*",
+             "sudo git clone https://github.com/kunal1601/terraform.git /var/www/html"
+     ]
+          
+    }
+}
+
+output "IP_of_instance" {
+  value = aws_instance.web1.public_ip
+}
